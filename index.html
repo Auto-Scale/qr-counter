@@ -109,6 +109,27 @@
   .bar { width: 100%; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
 
+  .history { display: flex; flex-direction: column; gap: 10px; }
+  .history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .history-head h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .history-head button {
+    flex: 0 0 auto; font: 500 12px var(--font-ui); padding: 4px 10px;
+    border-radius: 7px; color: var(--muted);
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips li {
+    list-style: none;
+    font: 600 13px var(--font-num);
+    font-variant-numeric: tabular-nums;
+    padding: 4px 8px;
+    border-radius: 7px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .chips li:first-child { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .chips .empty { font-family: var(--font-ui); font-weight: 400; background: none; border: none; color: var(--muted); padding-left: 0; }
+
   .controls { display: flex; gap: 10px; }
   button {
     flex: 1;
@@ -176,6 +197,14 @@
     <p class="mode-info" id="mode-info">Counting up by 1</p>
   </section>
 
+  <section class="history" aria-live="polite">
+    <div class="history-head">
+      <h2>Last 50 shown</h2>
+      <button type="button" id="clear-history">Clear</button>
+    </div>
+    <ul class="chips" id="history"><li class="empty">Numbers will appear here as they show.</li></ul>
+  </section>
+
   <div class="modes" role="group" aria-label="Counting mode">
     <button type="button" id="mode-one" data-mode="one" aria-pressed="true">One by one</button>
     <button type="button" id="mode-random" data-mode="random" aria-pressed="false">Random 500</button>
@@ -207,9 +236,12 @@
                 status: $("status"), toggle: $("toggle"), reset: $("reset"), modeInfo: $("mode-info"),
                 start: $("start"), step: $("step"), interval: $("interval"),
                 saveDefault: $("save-default"), saveNote: $("save-note"),
+                history: $("history"), clearHistory: $("clear-history"),
                 modes: document.querySelectorAll("[data-mode]") };
   const RANDOM_SPAN = 500;
+  const HISTORY_MAX = 50;
   const STORE_KEY = "qrCounterStartDefault";
+  const HISTORY_KEY = "qrCounterHistory";
 
   // Inputs that are empty or invalid (e.g. mid-typing) read as null and are ignored.
   const num = (el, parse) => { const v = parse(el.value); return Number.isFinite(v) ? v : null; };
@@ -233,6 +265,29 @@
   let t0 = performance.now(), running = true;
   let ticksBefore = 0, pausedTicks = 0, shownTick = null;
   let perms = new Map();
+
+  // History of the most recent numbers shown (newest first), kept across reloads.
+  let history = [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY));
+    if (Array.isArray(raw)) history = raw.filter(Number.isFinite).slice(0, HISTORY_MAX);
+  } catch (_) { /* no stored history */ }
+
+  function record(v) {
+    if (history[0] === v) return;            // same number still on screen — don't duplicate
+    history.unshift(v);
+    if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch (_) {}
+    renderHistory();
+  }
+
+  function renderHistory() {
+    if (!history.length) {
+      els.history.innerHTML = '<li class="empty">Numbers will appear here as they show.</li>';
+      return;
+    }
+    els.history.innerHTML = history.map((n) => `<li>${n}</li>`).join("");
+  }
 
   function perm(b) {
     let p = perms.get(b);
@@ -301,6 +356,7 @@
       els.next.textContent = valueAt(k + 1);
       els.ticks.textContent = ticksBefore + k;
       els.modeInfo.innerHTML = modeText(k);
+      record(v);
     }
     const frac = running ? ((now - t0) % intervalMs) / intervalMs : 0;
     els.progress.style.width = (frac * 100).toFixed(1) + "%";
@@ -382,6 +438,11 @@
   els.modes.forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   els.toggle.addEventListener("click", () => setRunning(!running));
   els.reset.addEventListener("click", restart);
+  els.clearHistory.addEventListener("click", () => {
+    history = [];
+    try { localStorage.removeItem(HISTORY_KEY); } catch (_) {}
+    renderHistory();
+  });
 
   // Save the current start value so the next reload begins from it.
   let noteTimer = null;
@@ -415,6 +476,7 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden) requestWakeLock(); });
 
   updateModeUI();
+  renderHistory();
   render(performance.now());
   requestAnimationFrame(loop);
   requestWakeLock();
