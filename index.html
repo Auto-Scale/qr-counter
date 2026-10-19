@@ -167,7 +167,7 @@
     <label for="step">Step<input id="step" type="number" inputmode="numeric" value="1"></label>
     <label for="interval">Seconds<input id="interval" type="number" inputmode="decimal" min="0.1" step="0.1" value="1"></label>
   </div>
-  <p class="hint">The code shows the current number as plain text. Change the start value and press Restart to begin from a new number.</p>
+  <p class="hint">The code shows the current number as plain text. Changes apply as you type: a new start value jumps the counter there, and a new step or speed continues from the current number. Restart goes back to the start value.</p>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -179,20 +179,16 @@
                 status: $("status"), toggle: $("toggle"), reset: $("reset"),
                 start: $("start"), step: $("step"), interval: $("interval") };
 
-  // State: value = base + floor((now - t0) / interval) * step while running (drift-free).
-  let base = 81950, step = 1, intervalMs = 1000, t0 = performance.now(), running = true;
-  let ticksBefore = 0, shown = null, pausedTicks = 0;
+  // Inputs that are empty or invalid (e.g. mid-typing) read as null and are ignored.
+  const num = (el, parse) => { const v = parse(el.value); return Number.isFinite(v) ? v : null; };
+  const readStart = () => num(els.start, (s) => parseInt(s, 10));
+  const readStep = () => num(els.step, (s) => parseInt(s, 10));
+  const readInterval = () => { const v = num(els.interval, parseFloat); return v !== null && v >= 0.1 ? v * 1000 : null; };
 
-  function readSettings() {
-    const s = parseInt(els.start.value, 10);
-    const st = parseInt(els.step.value, 10);
-    const iv = parseFloat(els.interval.value);
-    return {
-      start: Number.isFinite(s) ? s : 81950,
-      step: Number.isFinite(st) ? st : 1,
-      intervalMs: Number.isFinite(iv) && iv >= 0.1 ? iv * 1000 : 1000,
-    };
-  }
+  // State: value = base + floor((now - t0) / interval) * step while running (drift-free).
+  let base = readStart() ?? 81950, step = readStep() ?? 1, intervalMs = readInterval() ?? 1000;
+  let t0 = performance.now(), running = true;
+  let ticksBefore = 0, pausedTicks = 0, shown = null;
 
   function drawQR(text) {
     const qr = qrcode(0, "M");
@@ -211,6 +207,15 @@
 
   function currentTicks(now) {
     return running ? Math.floor((now - t0) / intervalMs) : pausedTicks;
+  }
+
+  // Fold the elapsed ticks into base so later changes continue from the current value,
+  // or jump to newBase (and reset the change count) when one is given.
+  function rebase(now, newBase) {
+    const k = currentTicks(now);
+    if (newBase == null) { base += k * step; ticksBefore += k; }
+    else { base = newBase; ticksBefore = 0; }
+    pausedTicks = 0; t0 = now; shown = null;
   }
 
   function render(now) {
@@ -232,41 +237,50 @@
   function setRunning(on) {
     const now = performance.now();
     if (on === running) return;
-    if (on) {
-      // resume from the shown value
-      base = shown; ticksBefore += pausedTicks; pausedTicks = 0; t0 = now;
-    } else {
-      pausedTicks = currentTicks(now);
-    }
+    if (on) rebase(now);               // resume from the paused value
+    else pausedTicks = currentTicks(now);
     running = on;
     els.toggle.textContent = on ? "Pause" : "Resume";
     els.status.textContent = on ? "Running" : "Paused";
     els.status.classList.toggle("live", on);
     requestWakeLock();
+    render(now);
   }
 
   function restart() {
-    const s = readSettings();
-    base = s.start; step = s.step; intervalMs = s.intervalMs;
-    t0 = performance.now(); ticksBefore = 0; pausedTicks = 0; shown = null;
-    running = false; setRunning(true);
-    render(performance.now());
+    const now = performance.now();
+    step = readStep() ?? step;
+    intervalMs = readInterval() ?? intervalMs;
+    rebase(now, readStart() ?? base);
+    setRunning(true);
+    render(now);
   }
 
-  // Step / interval changes apply immediately from the current value.
-  function applyLive() {
-    const s = readSettings();
-    if (running) { ticksBefore += currentTicks(performance.now()); base = shown; t0 = performance.now(); }
-    else { ticksBefore += pausedTicks; pausedTicks = 0; base = shown; }
-    step = s.step; intervalMs = s.intervalMs; shown = null;
-    render(performance.now());
-  }
+  // Every setting applies as soon as it is typed.
+  els.start.addEventListener("input", () => {
+    const s = readStart();
+    if (s === null) return;
+    const now = performance.now();
+    rebase(now, s);
+    render(now);
+  });
+  els.step.addEventListener("input", () => {
+    const v = readStep();
+    if (v === null) return;
+    const now = performance.now();
+    rebase(now); step = v;
+    render(now);
+  });
+  els.interval.addEventListener("input", () => {
+    const v = readInterval();
+    if (v === null) return;
+    const now = performance.now();
+    rebase(now); intervalMs = v;
+    render(now);
+  });
 
   els.toggle.addEventListener("click", () => setRunning(!running));
   els.reset.addEventListener("click", restart);
-  els.step.addEventListener("change", applyLive);
-  els.interval.addEventListener("change", applyLive);
-  els.start.addEventListener("keydown", (e) => { if (e.key === "Enter") restart(); });
 
   // Keep the screen on while the code is being scanned (optional; ignored if refused).
   let lock = null;
