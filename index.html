@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Rolling QR Counter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: one centered scanner card — QR first, live value under it, controls tucked below */
+  :root {
+    --bg: #eef1f4;
+    --surface: #ffffff;
+    --fg: #14202b;
+    --muted: #5d6b78;
+    --line: #d5dce3;
+    --accent: #0f6fd6;
+    --font-ui: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e141a; --surface: #17202a; --fg: #e6edf3; --muted: #93a1ae; --line: #2a3643; --accent: #5aa6ff;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e141a; --surface: #17202a; --fg: #e6edf3; --muted: #93a1ae; --line: #2a3643; --accent: #5aa6ff;
+    color-scheme: dark;
+  }
+
+  html, body { min-height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 32px;
+    display: flex;
+    justify-content: center;
+  }
+  main {
+    width: 100%;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; text-wrap: balance; }
+  .status {
+    font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .status::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+  }
+  .status.live { color: var(--accent); }
+  .status.live::before { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  /* QR is always black on white so every scanner reads it, in either theme */
+  .qr-frame {
+    background: #ffffff;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 340px;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+  }
+  canvas { width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+
+  .value {
+    font-family: var(--font-num);
+    font-size: clamp(40px, 13vw, 56px);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .02em;
+    line-height: 1;
+  }
+  .meta {
+    width: 100%;
+    display: flex; justify-content: space-between; gap: 12px;
+    font-size: 13px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .meta b { font-family: var(--font-num); font-weight: 600; color: var(--fg); }
+  .bar { width: 100%; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+  .controls { display: flex; gap: 10px; }
+  button {
+    flex: 1;
+    font: 600 15px var(--font-ui);
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  button:hover { filter: brightness(1.05); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    font: 500 16px var(--font-num);
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .status.live::before { animation: none; }
+  }
+</style>
+<style>body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+
+<main>
+  <header>
+    <h1>Rolling QR Counter</h1>
+    <span class="status live" id="status">Running</span>
+  </header>
+
+  <section class="card" aria-live="polite">
+    <div class="qr-frame"><canvas id="qr" width="330" height="330" aria-label="QR code"></canvas></div>
+    <div class="value" id="value">81950</div>
+    <div class="bar" aria-hidden="true"><i id="progress"></i></div>
+    <div class="meta">
+      <span>Next: <b id="next">81951</b></span>
+      <span>Changes so far: <b id="ticks">0</b></span>
+    </div>
+  </section>
+
+  <div class="controls">
+    <button class="primary" id="toggle" type="button">Pause</button>
+    <button id="reset" type="button">Restart from start</button>
+  </div>
+
+  <div class="settings">
+    <label for="start">Start value<input id="start" type="number" inputmode="numeric" value="81950"></label>
+    <label for="step">Step<input id="step" type="number" inputmode="numeric" value="1"></label>
+    <label for="interval">Seconds<input id="interval" type="number" inputmode="decimal" min="0.1" step="0.1" value="1"></label>
+  </div>
+  <p class="hint">The code shows the current number as plain text. Change the start value and press Restart to begin from a new number.</p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("qr"), ctx = canvas.getContext("2d");
+  const els = { value: $("value"), next: $("next"), ticks: $("ticks"), progress: $("progress"),
+                status: $("status"), toggle: $("toggle"), reset: $("reset"),
+                start: $("start"), step: $("step"), interval: $("interval") };
+
+  // State: value = base + floor((now - t0) / interval) * step while running (drift-free).
+  let base = 81950, step = 1, intervalMs = 1000, t0 = performance.now(), running = true;
+  let ticksBefore = 0, shown = null, pausedTicks = 0;
+
+  function readSettings() {
+    const s = parseInt(els.start.value, 10);
+    const st = parseInt(els.step.value, 10);
+    const iv = parseFloat(els.interval.value);
+    return {
+      start: Number.isFinite(s) ? s : 81950,
+      step: Number.isFinite(st) ? st : 1,
+      intervalMs: Number.isFinite(iv) && iv >= 0.1 ? iv * 1000 : 1000,
+    };
+  }
+
+  function drawQR(text) {
+    const qr = qrcode(0, "M");
+    qr.addData(String(text));
+    qr.make();
+    const n = qr.getModuleCount(), quiet = 4, total = n + quiet * 2;
+    const scale = Math.max(1, Math.floor(660 / total));
+    const px = total * scale;
+    canvas.width = px; canvas.height = px;
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, px, px);
+    ctx.fillStyle = "#000000";
+    for (let r = 0; r < n; r++)
+      for (let c = 0; c < n; c++)
+        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+  }
+
+  function currentTicks(now) {
+    return running ? Math.floor((now - t0) / intervalMs) : pausedTicks;
+  }
+
+  function render(now) {
+    const k = currentTicks(now);
+    const v = base + k * step;
+    if (v !== shown) {
+      shown = v;
+      drawQR(v);
+      els.value.textContent = v;
+      els.next.textContent = v + step;
+      els.ticks.textContent = ticksBefore + k;
+    }
+    const frac = running ? ((now - t0) % intervalMs) / intervalMs : 0;
+    els.progress.style.width = (frac * 100).toFixed(1) + "%";
+  }
+
+  function loop(now) { render(now); requestAnimationFrame(loop); }
+
+  function setRunning(on) {
+    const now = performance.now();
+    if (on === running) return;
+    if (on) {
+      // resume from the shown value
+      base = shown; ticksBefore += pausedTicks; pausedTicks = 0; t0 = now;
+    } else {
+      pausedTicks = currentTicks(now);
+    }
+    running = on;
+    els.toggle.textContent = on ? "Pause" : "Resume";
+    els.status.textContent = on ? "Running" : "Paused";
+    els.status.classList.toggle("live", on);
+    requestWakeLock();
+  }
+
+  function restart() {
+    const s = readSettings();
+    base = s.start; step = s.step; intervalMs = s.intervalMs;
+    t0 = performance.now(); ticksBefore = 0; pausedTicks = 0; shown = null;
+    running = false; setRunning(true);
+    render(performance.now());
+  }
+
+  // Step / interval changes apply immediately from the current value.
+  function applyLive() {
+    const s = readSettings();
+    if (running) { ticksBefore += currentTicks(performance.now()); base = shown; t0 = performance.now(); }
+    else { ticksBefore += pausedTicks; pausedTicks = 0; base = shown; }
+    step = s.step; intervalMs = s.intervalMs; shown = null;
+    render(performance.now());
+  }
+
+  els.toggle.addEventListener("click", () => setRunning(!running));
+  els.reset.addEventListener("click", restart);
+  els.step.addEventListener("change", applyLive);
+  els.interval.addEventListener("change", applyLive);
+  els.start.addEventListener("keydown", (e) => { if (e.key === "Enter") restart(); });
+
+  // Keep the screen on while the code is being scanned (optional; ignored if refused).
+  let lock = null;
+  async function requestWakeLock() {
+    try {
+      if (running && "wakeLock" in navigator && !lock) {
+        lock = await navigator.wakeLock.request("screen");
+        lock.addEventListener("release", () => { lock = null; });
+      }
+    } catch (_) { /* not available */ }
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) requestWakeLock(); });
+
+  render(performance.now());
+  requestAnimationFrame(loop);
+  requestWakeLock();
+})();
+</script>
+</body>
+</html>
