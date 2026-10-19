@@ -100,6 +100,12 @@
     font-variant-numeric: tabular-nums;
   }
   .meta b { font-family: var(--font-num); font-weight: 600; color: var(--fg); }
+  .mode-info {
+    margin: 0; width: 100%;
+    font-size: 13px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .mode-info b { font-family: var(--font-num); font-weight: 600; color: var(--fg); }
   .bar { width: 100%; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
 
@@ -118,6 +124,17 @@
   button:hover { filter: brightness(1.05); }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  .modes {
+    display: flex; gap: 4px; padding: 4px;
+    border: 1px solid var(--line); border-radius: 12px;
+  }
+  .modes button {
+    font-size: 14px; padding: 10px 6px;
+    border-color: transparent; background: transparent; color: var(--muted);
+    border-radius: 8px;
+  }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+
   .settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
   input {
@@ -131,6 +148,7 @@
     color: var(--fg);
     font-variant-numeric: tabular-nums;
   }
+  input:disabled { opacity: .45; }
   .hint { margin: 0; font-size: 13px; color: var(--muted); }
 
   @media (prefers-reduced-motion: reduce) {
@@ -155,7 +173,14 @@
       <span>Next: <b id="next">81951</b></span>
       <span>Changes so far: <b id="ticks">0</b></span>
     </div>
+    <p class="mode-info" id="mode-info">Counting up by 1</p>
   </section>
+
+  <div class="modes" role="group" aria-label="Counting mode">
+    <button type="button" id="mode-one" data-mode="one" aria-pressed="true">One by one</button>
+    <button type="button" id="mode-random" data-mode="random" aria-pressed="false">Random 500</button>
+    <button type="button" id="mode-ten" data-mode="ten" aria-pressed="false">Jumps of 10</button>
+  </div>
 
   <div class="controls">
     <button class="primary" id="toggle" type="button">Pause</button>
@@ -167,7 +192,7 @@
     <label for="step">Step<input id="step" type="number" inputmode="numeric" value="1"></label>
     <label for="interval">Seconds<input id="interval" type="number" inputmode="decimal" min="0.1" step="0.1" value="1"></label>
   </div>
-  <p class="hint">The code shows the current number as plain text. Changes apply as you type: a new start value jumps the counter there, and a new step or speed continues from the current number. Restart goes back to the start value.</p>
+  <p class="hint">The code shows the current number as plain text. Random 500 shows the next 500 numbers in shuffled order, each one once, then moves on to the following 500. Jumps of 10 adds 10 each time. Changes apply as you type, and Restart goes back to the start value.</p>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -176,8 +201,10 @@
   const $ = (id) => document.getElementById(id);
   const canvas = $("qr"), ctx = canvas.getContext("2d");
   const els = { value: $("value"), next: $("next"), ticks: $("ticks"), progress: $("progress"),
-                status: $("status"), toggle: $("toggle"), reset: $("reset"),
-                start: $("start"), step: $("step"), interval: $("interval") };
+                status: $("status"), toggle: $("toggle"), reset: $("reset"), modeInfo: $("mode-info"),
+                start: $("start"), step: $("step"), interval: $("interval"),
+                modes: document.querySelectorAll("[data-mode]") };
+  const RANDOM_SPAN = 500;
 
   // Inputs that are empty or invalid (e.g. mid-typing) read as null and are ignored.
   const num = (el, parse) => { const v = parse(el.value); return Number.isFinite(v) ? v : null; };
@@ -185,10 +212,48 @@
   const readStep = () => num(els.step, (s) => parseInt(s, 10));
   const readInterval = () => { const v = num(els.interval, parseFloat); return v !== null && v >= 0.1 ? v * 1000 : null; };
 
-  // State: value = base + floor((now - t0) / interval) * step while running (drift-free).
+  // Tick k = floor((now - t0) / interval) while running (drift-free); the value is a function of k.
+  //   seq:    base + k * step
+  //   random: block b = floor(k / 500) covers base + 500b … base + 500b + 499 in a shuffled order
+  let mode = "seq";
   let base = readStart() ?? 81950, step = readStep() ?? 1, intervalMs = readInterval() ?? 1000;
   let t0 = performance.now(), running = true;
-  let ticksBefore = 0, pausedTicks = 0, shown = null;
+  let ticksBefore = 0, pausedTicks = 0, shownTick = null;
+  let perms = new Map();
+
+  function perm(b) {
+    let p = perms.get(b);
+    if (!p) {
+      p = Array.from({ length: RANDOM_SPAN }, (_, i) => i);
+      for (let i = p.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [p[i], p[j]] = [p[j], p[i]];
+      }
+      perms.set(b, p);
+    }
+    return p;
+  }
+
+  function valueAt(k) {
+    if (mode === "random") {
+      const b = Math.floor(k / RANDOM_SPAN);
+      return base + b * RANDOM_SPAN + perm(b)[k % RANDOM_SPAN];
+    }
+    return base + k * step;
+  }
+
+  function currentTicks(now) {
+    return running ? Math.floor((now - t0) / intervalMs) : pausedTicks;
+  }
+
+  // Start a fresh run from tick 0: at newBase (resetting the change count),
+  // or continuing from the value on screen when no newBase is given.
+  function rebase(now, newBase) {
+    const k = currentTicks(now);
+    if (newBase == null) { newBase = valueAt(k); ticksBefore += k; }
+    else ticksBefore = 0;
+    base = newBase; perms = new Map(); pausedTicks = 0; t0 = now; shownTick = null;
+  }
 
   function drawQR(text) {
     const qr = qrcode(0, "M");
@@ -205,28 +270,24 @@
         if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
   }
 
-  function currentTicks(now) {
-    return running ? Math.floor((now - t0) / intervalMs) : pausedTicks;
-  }
-
-  // Fold the elapsed ticks into base so later changes continue from the current value,
-  // or jump to newBase (and reset the change count) when one is given.
-  function rebase(now, newBase) {
-    const k = currentTicks(now);
-    if (newBase == null) { base += k * step; ticksBefore += k; }
-    else { base = newBase; ticksBefore = 0; }
-    pausedTicks = 0; t0 = now; shown = null;
+  function modeText(k) {
+    if (mode === "random") {
+      const lo = base + Math.floor(k / RANDOM_SPAN) * RANDOM_SPAN;
+      return `Random order through <b>${lo}–${lo + RANDOM_SPAN - 1}</b> · ${(k % RANDOM_SPAN) + 1} of ${RANDOM_SPAN} shown`;
+    }
+    return `Counting ${step < 0 ? "down" : "up"} by <b>${Math.abs(step)}</b>`;
   }
 
   function render(now) {
     const k = currentTicks(now);
-    const v = base + k * step;
-    if (v !== shown) {
-      shown = v;
+    if (k !== shownTick) {
+      shownTick = k;
+      const v = valueAt(k);
       drawQR(v);
       els.value.textContent = v;
-      els.next.textContent = v + step;
+      els.next.textContent = valueAt(k + 1);
       els.ticks.textContent = ticksBefore + k;
+      els.modeInfo.innerHTML = modeText(k);
     }
     const frac = running ? ((now - t0) % intervalMs) / intervalMs : 0;
     els.progress.style.width = (frac * 100).toFixed(1) + "%";
@@ -234,25 +295,48 @@
 
   function loop(now) { render(now); requestAnimationFrame(loop); }
 
+  function updateRunUI() {
+    els.toggle.textContent = running ? "Pause" : "Resume";
+    els.status.textContent = running ? "Running" : "Paused";
+    els.status.classList.toggle("live", running);
+  }
+
+  function updateModeUI() {
+    const active = mode === "random" ? "random" : step === 1 ? "one" : step === 10 ? "ten" : null;
+    els.modes.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === active)));
+    els.step.disabled = mode === "random";
+  }
+
   function setRunning(on) {
-    const now = performance.now();
     if (on === running) return;
-    if (on) rebase(now);               // resume from the paused value
+    const now = performance.now();
+    if (on) t0 = now - pausedTicks * intervalMs;   // resume at the same tick
     else pausedTicks = currentTicks(now);
     running = on;
-    els.toggle.textContent = on ? "Pause" : "Resume";
-    els.status.textContent = on ? "Running" : "Paused";
-    els.status.classList.toggle("live", on);
+    updateRunUI();
     requestWakeLock();
+    render(now);
+  }
+
+  // Switching mode continues from the number on screen.
+  function setMode(name) {
+    const now = performance.now();
+    rebase(now);
+    if (name === "random") mode = "random";
+    else { mode = "seq"; step = name === "ten" ? 10 : 1; els.step.value = step; }
+    updateModeUI();
     render(now);
   }
 
   function restart() {
     const now = performance.now();
-    step = readStep() ?? step;
     intervalMs = readInterval() ?? intervalMs;
+    if (mode === "seq") step = readStep() ?? step;
     rebase(now, readStart() ?? base);
-    setRunning(true);
+    running = true;
+    updateRunUI();
+    updateModeUI();
+    requestWakeLock();
     render(now);
   }
 
@@ -266,19 +350,23 @@
   });
   els.step.addEventListener("input", () => {
     const v = readStep();
-    if (v === null) return;
+    if (v === null || mode === "random") return;
     const now = performance.now();
     rebase(now); step = v;
+    updateModeUI();
     render(now);
   });
   els.interval.addEventListener("input", () => {
     const v = readInterval();
     if (v === null) return;
     const now = performance.now();
-    rebase(now); intervalMs = v;
+    const k = currentTicks(now);
+    intervalMs = v;
+    if (running) t0 = now - k * intervalMs;   // keep the current number, new pace from here
     render(now);
   });
 
+  els.modes.forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   els.toggle.addEventListener("click", () => setRunning(!running));
   els.reset.addEventListener("click", restart);
 
@@ -294,6 +382,7 @@
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) requestWakeLock(); });
 
+  updateModeUI();
   render(performance.now());
   requestAnimationFrame(loop);
   requestWakeLock();
