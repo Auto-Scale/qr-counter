@@ -192,7 +192,10 @@
     <label for="step">Step<input id="step" type="number" inputmode="numeric" value="1"></label>
     <label for="interval">Seconds<input id="interval" type="number" inputmode="decimal" min="0.1" step="0.1" value="1"></label>
   </div>
-  <p class="hint">The code shows the current number as plain text. Random 500 shows the next 500 numbers in shuffled order, each one once, then moves on to the following 500. Jumps of 10 adds 10 each time. Changes apply as you type, and Restart goes back to the start value.</p>
+  <div class="controls">
+    <button id="save-default" type="button">Save start as default</button>
+  </div>
+  <p class="hint" id="save-note">The code shows the current number as plain text. Random 500 shows the next 500 numbers in shuffled order, each one once, then moves on to the following 500. Jumps of 10 adds 10 each time. Changes apply as you type, and Restart goes back to the start value.</p>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -203,12 +206,22 @@
   const els = { value: $("value"), next: $("next"), ticks: $("ticks"), progress: $("progress"),
                 status: $("status"), toggle: $("toggle"), reset: $("reset"), modeInfo: $("mode-info"),
                 start: $("start"), step: $("step"), interval: $("interval"),
+                saveDefault: $("save-default"), saveNote: $("save-note"),
                 modes: document.querySelectorAll("[data-mode]") };
   const RANDOM_SPAN = 500;
+  const STORE_KEY = "qrCounterStartDefault";
 
   // Inputs that are empty or invalid (e.g. mid-typing) read as null and are ignored.
   const num = (el, parse) => { const v = parse(el.value); return Number.isFinite(v) ? v : null; };
   const readStart = () => num(els.start, (s) => parseInt(s, 10));
+
+  // Load the saved default (if any) so the start field reflects it before anything else reads it.
+  (() => {
+    try {
+      const saved = parseInt(localStorage.getItem(STORE_KEY), 10);
+      if (Number.isFinite(saved)) els.start.value = saved;
+    } catch (_) { /* storage blocked — fall back to the field's built-in value */ }
+  })();
   const readStep = () => num(els.step, (s) => parseInt(s, 10));
   const readInterval = () => { const v = num(els.interval, parseFloat); return v !== null && v >= 0.1 ? v * 1000 : null; };
 
@@ -369,6 +382,25 @@
   els.modes.forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   els.toggle.addEventListener("click", () => setRunning(!running));
   els.reset.addEventListener("click", restart);
+
+  // Save the current start value so the next reload begins from it.
+  let noteTimer = null;
+  els.saveDefault.addEventListener("click", () => {
+    const s = readStart();
+    if (s === null) { flashNote("Enter a start value first."); return; }
+    try {
+      localStorage.setItem(STORE_KEY, String(s));
+      flashNote(`Saved. Next time the app opens, it will start from ${s}.`);
+    } catch (_) {
+      flashNote("Couldn't save — this browser is blocking storage (e.g. private mode).");
+    }
+  });
+  function flashNote(msg) {
+    const prev = els.saveNote.dataset.default ?? (els.saveNote.dataset.default = els.saveNote.textContent);
+    els.saveNote.textContent = msg;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { els.saveNote.textContent = prev; }, 4000);
+  }
 
   // Keep the screen on while the code is being scanned (optional; ignored if refused).
   let lock = null;
