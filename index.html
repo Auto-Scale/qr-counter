@@ -130,7 +130,7 @@
     cursor: pointer;
   }
   .chips button:hover { border-color: var(--accent); color: var(--fg); filter: none; }
-  .chips li:first-child button { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .chips button.current { background: var(--accent); border-color: var(--accent); color: var(--surface); }
   .chips .empty { font-family: var(--font-ui); font-size: 13px; color: var(--muted); align-items: center; }
 
   .controls { display: flex; gap: 10px; }
@@ -290,7 +290,13 @@
       els.history.innerHTML = '<li class="empty">Numbers will appear here as they show.</li>';
       return;
     }
-    els.history.innerHTML = history.map((n) => `<li><button type="button" data-v="${n}">${n}</button></li>`).join("");
+    const cur = currentValue();
+    let marked = false;
+    els.history.innerHTML = history.map((n) => {
+      const isCur = !marked && n === cur;      // highlight only the first chip matching the current number
+      if (isCur) marked = true;
+      return `<li><button type="button" class="${isCur ? "current" : ""}" data-v="${n}">${n}</button></li>`;
+    }).join("");
   }
 
   function perm(b) {
@@ -352,7 +358,7 @@
     return `Counting ${step < 0 ? "down" : "up"} by <b>${Math.abs(step)}</b>`;
   }
 
-  function render(now) {
+  function render(now, allowRecord = true) {
     const k = currentTicks(now);
     if (k !== shownTick) {
       shownTick = k;
@@ -362,7 +368,8 @@
       els.next.textContent = valueAt(k + 1);
       els.ticks.textContent = ticksBefore + k;
       els.modeInfo.innerHTML = modeText(k);
-      record(v);
+      if (allowRecord) record(v);              // record() re-renders history; otherwise refresh it directly
+      else renderHistory();
     }
     const frac = running ? ((now - t0) % intervalMs) / intervalMs : 0;
     els.progress.style.width = (frac * 100).toFixed(1) + "%";
@@ -475,8 +482,7 @@
     running = false;
     rebase(now, v);
     updateRunUI();
-    requestWakeLock();
-    render(now);
+    render(now, false);            // jump without re-adding it to the list
   });
 
   function flashNote(msg) {
