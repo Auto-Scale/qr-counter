@@ -116,9 +116,10 @@
     flex: 0 0 auto; font: 500 12px var(--font-ui); padding: 4px 10px;
     border-radius: 7px; color: var(--muted);
   }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chips li {
-    list-style: none;
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+  .chips li { display: flex; }
+  .chips button {
+    flex: 0 0 auto;
     font: 600 13px var(--font-num);
     font-variant-numeric: tabular-nums;
     padding: 4px 8px;
@@ -126,9 +127,11 @@
     background: var(--bg);
     border: 1px solid var(--line);
     color: var(--muted);
+    cursor: pointer;
   }
-  .chips li:first-child { background: var(--accent); border-color: var(--accent); color: var(--surface); }
-  .chips .empty { font-family: var(--font-ui); font-weight: 400; background: none; border: none; color: var(--muted); padding-left: 0; }
+  .chips button:hover { border-color: var(--accent); color: var(--fg); filter: none; }
+  .chips li:first-child button { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .chips .empty { font-family: var(--font-ui); font-size: 13px; color: var(--muted); align-items: center; }
 
   .controls { display: flex; gap: 10px; }
   button {
@@ -195,6 +198,7 @@
       <span>Changes so far: <b id="ticks">0</b></span>
     </div>
     <p class="mode-info" id="mode-info">Counting up by 1</p>
+    <button type="button" id="save-current" style="width:100%">Save current as default</button>
   </section>
 
   <section class="history" aria-live="polite">
@@ -224,7 +228,7 @@
   <div class="controls">
     <button id="save-default" type="button">Save start as default</button>
   </div>
-  <p class="hint" id="save-note">The code shows the current number as plain text. Random 500 shows the next 500 numbers in shuffled order, each one once, then moves on to the following 500. Jumps of 10 adds 10 each time. Changes apply as you type, and Restart goes back to the start value.</p>
+  <p class="hint" id="save-note">The code shows the current number as plain text. Random 500 shows the next 500 numbers in shuffled order, each one once, then moves on to the following 500. Jumps of 10 adds 10 each time. Changes apply as you type, and Restart goes back to the start value. Tap any number in the history to show it in the QR and pause there.</p>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
@@ -235,7 +239,7 @@
   const els = { value: $("value"), next: $("next"), ticks: $("ticks"), progress: $("progress"),
                 status: $("status"), toggle: $("toggle"), reset: $("reset"), modeInfo: $("mode-info"),
                 start: $("start"), step: $("step"), interval: $("interval"),
-                saveDefault: $("save-default"), saveNote: $("save-note"),
+                saveDefault: $("save-default"), saveCurrent: $("save-current"), saveNote: $("save-note"),
                 history: $("history"), clearHistory: $("clear-history"),
                 modes: document.querySelectorAll("[data-mode]") };
   const RANDOM_SPAN = 500;
@@ -286,7 +290,7 @@
       els.history.innerHTML = '<li class="empty">Numbers will appear here as they show.</li>';
       return;
     }
-    els.history.innerHTML = history.map((n) => `<li>${n}</li>`).join("");
+    els.history.innerHTML = history.map((n) => `<li><button type="button" data-v="${n}">${n}</button></li>`).join("");
   }
 
   function perm(b) {
@@ -313,6 +317,8 @@
   function currentTicks(now) {
     return running ? Math.floor((now - t0) / intervalMs) : pausedTicks;
   }
+
+  function currentValue() { return valueAt(currentTicks(performance.now())); }
 
   // Start a fresh run from tick 0: at newBase (resetting the change count),
   // or continuing from the value on screen when no newBase is given.
@@ -444,18 +450,35 @@
     renderHistory();
   });
 
-  // Save the current start value so the next reload begins from it.
+  // Save a value so the next reload begins from it, and reflect it in the Start box.
   let noteTimer = null;
-  els.saveDefault.addEventListener("click", () => {
-    const s = readStart();
-    if (s === null) { flashNote("Enter a start value first."); return; }
+  function saveAsDefault(v) {
+    if (v === null) { flashNote("Enter a start value first."); return; }
+    els.start.value = v;
     try {
-      localStorage.setItem(STORE_KEY, String(s));
-      flashNote(`Saved. Next time the app opens, it will start from ${s}.`);
+      localStorage.setItem(STORE_KEY, String(v));
+      flashNote(`Saved. Next time the app opens, it will start from ${v}.`);
     } catch (_) {
       flashNote("Couldn't save — this browser is blocking storage (e.g. private mode).");
     }
+  }
+  els.saveDefault.addEventListener("click", () => saveAsDefault(readStart()));
+  els.saveCurrent.addEventListener("click", () => saveAsDefault(currentValue()));
+
+  // Click a number in the history to show it in the QR and pause there.
+  els.history.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-v]");
+    if (!btn) return;
+    const v = parseInt(btn.dataset.v, 10);
+    if (!Number.isFinite(v)) return;
+    const now = performance.now();
+    running = false;
+    rebase(now, v);
+    updateRunUI();
+    requestWakeLock();
+    render(now);
   });
+
   function flashNote(msg) {
     const prev = els.saveNote.dataset.default ?? (els.saveNote.dataset.default = els.saveNote.textContent);
     els.saveNote.textContent = msg;
